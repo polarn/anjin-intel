@@ -79,7 +79,7 @@ func TestParseLine(t *testing.T) {
 		{"separator", "-----------------------------", false, "", ""},
 		{"blank", "", false, "", ""},
 		{"bad timestamp", "[ 2026.13.99 99:99:99 ] X > y", false, "", ""},
-		{"channel MOTD (EVE System)", "[ 2026.06.24 11:19:27 ] EVE System > Channel MOTD: ESOTERIA // PARAGON SOUL", false, "", ""},
+		{"EVE System shipped (server consumes MOTD)", "[ 2026.06.24 11:19:27 ] EVE System > Channel MOTD: ESOTERIA // PARAGON SOUL", true, "EVE System", "Channel MOTD: ESOTERIA // PARAGON SOUL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

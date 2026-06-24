@@ -82,13 +82,8 @@ func ParseLine(line string) (Entry, bool) {
 	if err != nil {
 		return Entry{}, false
 	}
-	sender := strings.TrimSpace(m[2])
-	if sender == systemSender {
-		return Entry{}, false // channel MOTD / system notices — not intel
-	}
-	return Entry{TS: ts, Sender: sender, Message: m[3]}, true
+	// "EVE System" lines (channel MOTD + notices) ARE shipped: the server consumes
+	// the MOTD for the channel's region scope, then drops it from display. The
+	// shipper stays dumb — all intel/filtering policy lives server-side.
+	return Entry{TS: ts, Sender: strings.TrimSpace(m[2]), Message: m[3]}, true
 }
-
-// systemSender is EVE's automated pseudo-sender: it posts the channel MOTD (shown on
-// join) and other notices, never player intel — so we drop its lines.
-const systemSender = "EVE System"
