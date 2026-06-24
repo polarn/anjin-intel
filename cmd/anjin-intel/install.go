@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,33 +210,42 @@ func copyFile(src, dst string) error {
 	return os.Rename(tmp, dst) // atomic; replacing a running binary is fine on Linux
 }
 
-// detectLogdir best-effort finds the EVE Chatlogs dir across common Linux layouts
-// (native, Steam/Proton, Lutris/Faugus), preferring the most recently written one.
+// detectSkip are big/irrelevant directories we never descend into when searching for
+// the Chatlogs dir (Steam dirs are intentionally NOT here — Proton prefixes live there).
+var detectSkip = map[string]bool{
+	".cache": true, ".cargo": true, ".rustup": true, ".npm": true, ".gradle": true,
+	".m2": true, "node_modules": true, ".git": true, "go": true, ".venv": true,
+	"__pycache__": true, ".mozilla": true, ".thunderbird": true,
+}
+
+// detectLogdir best-effort finds the EVE Chatlogs dir under $HOME, across any layout
+// (native, Steam/Proton, Lutris, Faugus, Bottles…) by a bounded walk — globs can't
+// match the variable wrapper depth (e.g. ~/Faugus/eve-online/drive_c/...). Prefers the
+// most recently written match (the active install).
 func detectLogdir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	globs := []string{
-		filepath.Join(home, "Documents/EVE/logs/Chatlogs"),
-		filepath.Join(home, ".steam/steam/steamapps/compatdata/*/pfx/drive_c/users/steamuser/Documents/EVE/logs/Chatlogs"),
-		filepath.Join(home, ".local/share/Steam/steamapps/compatdata/*/pfx/drive_c/users/steamuser/Documents/EVE/logs/Chatlogs"),
-		filepath.Join(home, "*/drive_c/users/*/Documents/EVE/logs/Chatlogs"),
-		filepath.Join(home, "Games/*/drive_c/users/*/Documents/EVE/logs/Chatlogs"),
-	}
 	var best string
 	var bestMod time.Time
-	for _, g := range globs {
-		matches, _ := filepath.Glob(g)
-		for _, m := range matches {
-			info, err := os.Stat(m)
-			if err != nil || !info.IsDir() {
-				continue
-			}
-			if info.ModTime().After(bestMod) {
-				best, bestMod = m, info.ModTime()
-			}
+	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
 		}
-	}
+		if path != home && detectSkip[d.Name()] {
+			return fs.SkipDir
+		}
+		if rel, e := filepath.Rel(home, path); e == nil && strings.Count(rel, string(os.PathSeparator)) > 12 {
+			return fs.SkipDir // depth cap
+		}
+		if d.Name() == "Chatlogs" && strings.HasSuffix(filepath.ToSlash(filepath.Dir(path)), "EVE/logs") {
+			if info, e := d.Info(); e == nil && info.ModTime().After(bestMod) {
+				best, bestMod = path, info.ModTime()
+			}
+			return fs.SkipDir // found it; don't descend into the logs
+		}
+		return nil
+	})
 	return best
 }
