@@ -17,6 +17,30 @@ channels you explicitly allow. Default is *no* channels.
 > **Scope:** Linux first (Steam/Proton, Lutris). macOS + Windows are a planned
 > follow-up.
 
+## Get it
+
+Download the latest Linux/amd64 binary from [Releases](https://github.com/polarn/anjin-intel/releases/latest):
+
+```sh
+curl -fsSL -o anjin-intel \
+  https://github.com/polarn/anjin-intel/releases/latest/download/anjin-intel-linux-amd64
+chmod +x anjin-intel
+```
+
+Each release ships a `SHA256SUMS` and a [SLSA build provenance](https://slsa.dev)
+attestation, so you can verify the binary came from this repo's CI (not a hand-built
+upload):
+
+```sh
+gh attestation verify anjin-intel --repo polarn/anjin-intel
+```
+
+Or build from source (pure Go stdlib, no deps):
+
+```sh
+go build -o anjin-intel ./cmd/anjin-intel
+```
+
 ## Usage
 
 **Install** (Linux) — registers a systemd *user* service that runs the shipper at

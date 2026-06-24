@@ -20,6 +20,9 @@ import (
 	"github.com/polarn/anjin-intel/internal/tail"
 )
 
+// version is overwritten at release time via -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	if len(os.Args) < 2 {
@@ -36,6 +39,8 @@ func main() {
 		err = uninstall(os.Args[2:])
 	case "status":
 		err = status(os.Args[2:])
+	case "version", "-v", "--version":
+		fmt.Println("anjin-intel", version)
 	case "-h", "--help", "help":
 		usage()
 	default:
