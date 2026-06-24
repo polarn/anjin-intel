@@ -78,6 +78,52 @@ func TestSend_TransientError(t *testing.T) {
 	}
 }
 
+func TestAllowlist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/intel/config" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("auth = %q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"channels":["Local","Querious.imperium"]}`))
+	}))
+	defer srv.Close()
+	got, err := New(srv.URL, "tok").Allowlist(context.Background())
+	if err != nil {
+		t.Fatalf("Allowlist: %v", err)
+	}
+	if len(got) != 2 || got[0] != "Local" || got[1] != "Querious.imperium" {
+		t.Errorf("channels = %v", got)
+	}
+}
+
+func TestReportSeen(t *testing.T) {
+	var gotSeen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/intel/channels" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			Seen []string `json:"seen"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		gotSeen = body.Seen
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if err := New(srv.URL, "tok").ReportSeen(context.Background(), []string{"Local", "Corp"}); err != nil {
+		t.Fatalf("ReportSeen: %v", err)
+	}
+	if len(gotSeen) != 2 || gotSeen[0] != "Local" {
+		t.Errorf("server got seen = %v", gotSeen)
+	}
+	// empty seen is a no-op (no request)
+	if err := New("http://invalid.invalid", "tok").ReportSeen(context.Background(), nil); err != nil {
+		t.Errorf("empty ReportSeen should no-op, got %v", err)
+	}
+}
+
 func TestSend_EmptyIsNoop(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("should not POST for an empty batch")

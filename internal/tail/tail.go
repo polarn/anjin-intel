@@ -34,23 +34,59 @@ type file struct {
 	pending string // decoded text not yet terminated by a newline
 }
 
-// Tailer tracks per-file state across polls. Not safe for concurrent Poll calls.
+// Tailer tracks per-file state across polls. Not safe for concurrent use — Poll,
+// SetAllowlist and Seen must be called from one goroutine (the run loop).
 type Tailer struct {
 	dir     string
 	allow   map[string]bool
 	files   map[string]*file
-	started bool // false until the first Poll registers the startup set
+	seen    map[string]bool // every channel name observed in the dir (for discovery)
+	started bool            // false until the first Poll registers the startup set
 }
 
-// New builds a Tailer for dir, shipping only channels in allow.
+// New builds a Tailer for dir, seeded with the channels in allow (the server
+// allowlist later overrides this via SetAllowlist).
 func New(dir string, allow []string) *Tailer {
-	m := make(map[string]bool, len(allow))
-	for _, c := range allow {
+	return &Tailer{dir: dir, allow: toSet(allow), files: map[string]*file{}, seen: map[string]bool{}}
+}
+
+func toSet(items []string) map[string]bool {
+	m := make(map[string]bool, len(items))
+	for _, c := range items {
 		if c = strings.TrimSpace(c); c != "" {
 			m[c] = true
 		}
 	}
-	return &Tailer{dir: dir, allow: m, files: map[string]*file{}}
+	return m
+}
+
+// SetAllowlist replaces the allowlist (e.g. from the server's /api/intel/config) and
+// re-evaluates every tracked file. A channel that's newly enabled skips to the file's
+// current end, so ticking it ships from now on — not a replay of everything that
+// arrived while it was disabled.
+func (t *Tailer) SetAllowlist(channels []string) {
+	next := toSet(channels)
+	for name, f := range t.files {
+		nowAllowed := next[f.channel]
+		if nowAllowed && !f.allowed {
+			if info, err := os.Stat(filepath.Join(t.dir, name)); err == nil {
+				f.offset, f.odd, f.pending = info.Size(), nil, ""
+			}
+		}
+		f.allowed = nowAllowed
+	}
+	t.allow = next
+}
+
+// Seen returns every channel name observed in the log dir (names only), sorted — for
+// the server's seen-list so the SPA can offer a channel picker.
+func (t *Tailer) Seen() []string {
+	out := make([]string, 0, len(t.seen))
+	for c := range t.seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // headerProbe is how many bytes we read from a file's start to find the channel name.
@@ -97,6 +133,9 @@ func (t *Tailer) register(path, name string, startup bool) *file {
 		return f // unreadable; allowed stays false
 	}
 	f.channel = t.resolveChannel(path, name)
+	if f.channel != "" {
+		t.seen[f.channel] = true // record for discovery, even if not allowlisted
+	}
 	f.allowed = t.allow[f.channel]
 	if startup {
 		f.offset = info.Size() // skip existing history

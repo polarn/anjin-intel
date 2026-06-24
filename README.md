@@ -27,9 +27,11 @@ anjin-intel run \
   --channels "Querious.imperium,Delve.imperium"
 ```
 
-`run` watches the log directory, parses new lines from the allowlisted channels, and
-POSTs them in batches. It only ships lines written *after* it starts (no backfill),
-and only for channels you list. See [SPEC.md](SPEC.md) for the server contract.
+`run` watches the log directory, parses new lines, and POSTs them in batches. It only
+ships lines written *after* it starts (no backfill). **Channels are managed in the
+Intel tab** — the shipper reports the channels it sees there (so you can pick them) and
+polls the server allowlist (~60s); `--channels` is just an optional offline/first-run
+seed. See [SPEC.md](SPEC.md) for the server contract.
 
 `install` / `uninstall` / `status` (autostart at login via a systemd user unit) land
 after the `run` MVP is solid.

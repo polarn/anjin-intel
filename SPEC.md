@@ -36,7 +36,7 @@ The shipper only sends lines for channels on its **allowlist**; the server *also
 enforces the allowlist (defense in depth). Default allowlist is empty — nothing is
 shipped until the user opts a channel in.
 
-## Channel allowlist (server-authoritative; not yet consumed by the shipper)
+## Channel allowlist (server-authoritative)
 
 ```
 GET {server}/api/intel/config
@@ -44,12 +44,11 @@ Authorization: Bearer <enrollment-token>
 → { "channels": ["Querious.imperium", "Delve.imperium", ...] }
 ```
 
-The shipper polls this periodically and tails only listed channels. `--channels a,b,c`
-at install/run time seeds a local allowlist for offline/simple use; the server list
-(when reachable) is authoritative. *(Server-poll integration lands after the MVP; the
-MVP uses the local `--channels` seed.)*
+The shipper polls this every ~60s and tails only listed channels. `--channels a,b,c`
+at run time seeds a local allowlist for offline/first-run use; the server list (when
+reachable) is authoritative.
 
-## Seen-channel discovery (privacy-safe; not yet consumed by the shipper)
+## Seen-channel discovery (privacy-safe)
 
 ```
 POST {server}/api/intel/channels

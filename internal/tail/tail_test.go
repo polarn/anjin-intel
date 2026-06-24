@@ -101,6 +101,39 @@ func TestTailer_AllowlistFilter(t *testing.T) {
 	}
 }
 
+// Seen tracks every channel observed (even un-allowlisted), and SetAllowlist switches
+// which ship — a newly-enabled channel starts from "now", not the disabled backlog.
+func TestTailer_SeenAndSetAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "Local_20260623_190000_1.txt")
+	corp := filepath.Join(dir, "Corp_20260623_190000_2.txt")
+	writeFile(t, local, header("Local")+msg("old"))
+	writeFile(t, corp, header("Corp")+msg("old"))
+
+	tl := New(dir, []string{"Local"})
+	tl.Poll() // register both at EOF (no backfill); both observed
+
+	if got := strings.Join(tl.Seen(), ","); got != "Corp,Local" {
+		t.Fatalf("Seen() = %q, want Corp,Local", got)
+	}
+
+	// Local is allowlisted, Corp isn't.
+	appendBytes(t, local, u16le(msg("local 1")))
+	appendBytes(t, corp, u16le(msg("corp 1")))
+	if got := tl.Poll(); len(got) != 1 || got[0].Channel != "Local" {
+		t.Fatalf("want Local only, got %v", bodies(got))
+	}
+
+	// Switch the allowlist to Corp. The Corp backlog ("corp 1") must NOT replay.
+	tl.SetAllowlist([]string{"Corp"})
+	appendBytes(t, corp, u16le(msg("corp 2")))
+	appendBytes(t, local, u16le(msg("local 2")))
+	got := tl.Poll()
+	if len(got) != 1 || got[0].Channel != "Corp" || got[0].Entry.Message != "corp 2" {
+		t.Fatalf("after SetAllowlist want only 'corp 2' on Corp, got %v", got)
+	}
+}
+
 // A line split across polls — including at an odd byte boundary (a half UTF-16 code
 // unit) — is buffered and emitted once complete.
 func TestTailer_PartialLineAndOddByteCarry(t *testing.T) {

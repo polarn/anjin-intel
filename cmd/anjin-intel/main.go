@@ -69,24 +69,53 @@ func runCmd(args []string) error {
 	if _, err := os.Stat(*logdir); err != nil {
 		return fmt.Errorf("logdir %q: %w", *logdir, err)
 	}
-	allow := splitList(*channels)
-	if len(allow) == 0 {
-		log.Println("WARNING: no --channels set — nothing will be shipped until you allow some")
-	}
+	allow := splitList(*channels) // seed only — the server allowlist (Intel tab) is authoritative
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	tl := tail.New(*logdir, allow)
 	sh := ship.New(*server, *token)
-	log.Printf("watching %s every %s; channels=%s; server=%s", *logdir, *poll, strings.Join(allow, ","), *server)
+	log.Printf("watching %s every %s; server=%s (channels managed in the Intel tab; --channels seed=[%s])",
+		*logdir, *poll, *server, strings.Join(allow, ","))
 
 	return loop(ctx, tl, sh, *poll)
 }
 
+// syncInterval is how often the shipper reports the channels it has seen and refreshes
+// the server-managed allowlist.
+const syncInterval = 60 * time.Second
+
+// configSync reports the seen channel names (for the Intel-tab picker) and pulls the
+// server allowlist (authoritative when reachable; on error the local seed stands).
+func configSync(ctx context.Context, tl *tail.Tailer, sh *ship.Shipper, announce bool) {
+	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if seen := tl.Seen(); len(seen) > 0 {
+		if err := sh.ReportSeen(sctx, seen); err != nil {
+			log.Printf("report seen channels: %v", err)
+		}
+	}
+	chans, err := sh.Allowlist(sctx)
+	if err != nil {
+		if announce {
+			log.Printf("server allowlist unavailable (%v) — using the --channels seed", err)
+		}
+		return
+	}
+	tl.SetAllowlist(chans)
+	if announce {
+		log.Printf("server allowlist: %d channel(s) [%s]", len(chans), strings.Join(chans, ", "))
+	}
+}
+
 // loop polls the tailer, accumulates lines, and ships them with exponential backoff
-// on transient failure. A protocol mismatch is fatal (retrying won't help).
+// on transient failure. A protocol mismatch is fatal (retrying won't help). It also
+// periodically syncs the server allowlist + reports seen channels.
 func loop(ctx context.Context, tl *tail.Tailer, sh *ship.Shipper, poll time.Duration) error {
+	configSync(ctx, tl, sh, true) // apply the server allowlist before the first poll
+	lastSync := time.Now()
+
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
@@ -105,6 +134,11 @@ func loop(ctx context.Context, tl *tail.Tailer, sh *ship.Shipper, poll time.Dura
 			log.Println("shutting down")
 			return nil
 		case <-ticker.C:
+		}
+
+		if time.Since(lastSync) >= syncInterval {
+			configSync(ctx, tl, sh, false)
+			lastSync = time.Now()
 		}
 
 		pending = appendCapped(pending, tl.Poll())
