@@ -17,21 +17,32 @@ channels you explicitly allow. Default is *no* channels.
 > **Scope:** Linux first (Steam/Proton, Lutris). macOS + Windows are a planned
 > follow-up.
 
-## Usage (MVP)
+## Usage
+
+**Install** (Linux) — registers a systemd *user* service that runs the shipper at
+login and copies the binary to `~/.local/bin`:
 
 ```sh
-anjin-intel run \
+anjin-intel install \
   --server https://anjin.example.net \
-  --token  <enrollment-token-from-the-Intel-tab> \
-  --logdir ~/.local/share/Steam/steamapps/compatdata/.../EVE/logs/Chatlogs \
-  --channels "Querious.imperium,Delve.imperium"
+  --token  <enrollment-token-from-the-Intel-tab>
+  # --logdir is auto-detected (Steam/Proton, Lutris, native); pass it if detection fails
 ```
 
-`run` watches the log directory, parses new lines, and POSTs them in batches. It only
-ships lines written *after* it starts (no backfill). **Channels are managed in the
-Intel tab** — the shipper reports the channels it sees there (so you can pick them) and
-polls the server allowlist (~60s); `--channels` is just an optional offline/first-run
-seed. See [SPEC.md](SPEC.md) for the server contract.
+Then manage everything from the **Intel tab**: tick the channels to monitor (the
+shipper reports the ones it sees, polls the allowlist ~60s, and ships only those).
 
-`install` / `uninstall` / `status` (autostart at login via a systemd user unit) land
-after the `run` MVP is solid.
+```sh
+anjin-intel status      # installed? running? server reachable? last ship?
+anjin-intel uninstall   # stop + remove the service, binary and config
+```
+
+**Run in the foreground** (no install — e.g. to try it, or on macOS/Windows):
+
+```sh
+anjin-intel run --server <url> --token <tok> --logdir <EVE/logs/Chatlogs> [--channels a,b]
+```
+
+`run` reads the install config when flags are omitted (that's how the service starts
+it). It only ships lines written *after* it starts (no backfill); `--channels` is just
+an optional offline/first-run seed. See [SPEC.md](SPEC.md) for the server contract.

@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/polarn/anjin-intel/internal/config"
 	"github.com/polarn/anjin-intel/internal/ship"
 	"github.com/polarn/anjin-intel/internal/tail"
 )
@@ -25,11 +26,16 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	var err error
 	switch os.Args[1] {
 	case "run":
-		if err := runCmd(os.Args[2:]); err != nil {
-			log.Fatalf("anjin-intel: %v", err)
-		}
+		err = runCmd(os.Args[2:])
+	case "install":
+		err = install(os.Args[2:])
+	case "uninstall":
+		err = uninstall(os.Args[2:])
+	case "status":
+		err = status(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -37,16 +43,22 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	if err != nil {
+		log.Fatalf("anjin-intel: %v", err)
+	}
 }
 
 func usage() {
 	fmt.Fprint(os.Stderr, `anjin-intel — ship EVE chat-log intel to your anjin server
 
 Usage:
-  anjin-intel run --server <url> --token <tok> --logdir <path> [--channels a,b] [--poll 2s]
+  anjin-intel install --server <url> --token <tok> [--logdir <path>] [--channels a,b]
+  anjin-intel run     [--server <url> --token <tok> --logdir <path>]   (reads the install config if omitted)
+  anjin-intel status
+  anjin-intel uninstall
 
-Commands:
-  run   Tail the chat logs and POST allowlisted lines. (install/uninstall/status: coming soon)
+install registers a systemd user service that runs the shipper at login (Linux).
+Channels are managed in the Intel tab; --channels is just an optional seed.
 `)
 }
 
@@ -59,27 +71,44 @@ func runCmd(args []string) error {
 	server := fs.String("server", "", "anjin server base URL (e.g. https://anjin.example.net)")
 	token := fs.String("token", "", "enrollment token from the Intel tab")
 	logdir := fs.String("logdir", "", "EVE Chatlogs directory to watch")
-	channels := fs.String("channels", "", "comma-separated channel allowlist (default: none — nothing is shipped)")
+	channels := fs.String("channels", "", "comma-separated channel seed (the Intel tab is authoritative)")
 	poll := fs.Duration("poll", 2*time.Second, "how often to scan the log directory")
 	fs.Parse(args)
 
-	if *server == "" || *token == "" || *logdir == "" {
-		return errors.New("--server, --token and --logdir are required")
-	}
-	if _, err := os.Stat(*logdir); err != nil {
-		return fmt.Errorf("logdir %q: %w", *logdir, err)
-	}
+	// Fall back to the saved install config for any flag not given — so the systemd
+	// unit can invoke `anjin-intel run` with no arguments.
+	cfg, _ := config.Load()
+	srv := firstNonEmpty(*server, cfg.Server)
+	tok := firstNonEmpty(*token, cfg.Token)
+	ld := firstNonEmpty(*logdir, cfg.Logdir)
 	allow := splitList(*channels) // seed only — the server allowlist (Intel tab) is authoritative
+	if len(allow) == 0 {
+		allow = cfg.Channels
+	}
+
+	if srv == "" || tok == "" || ld == "" {
+		return errors.New("need --server, --token and --logdir (or run `anjin-intel install` first)")
+	}
+	if _, err := os.Stat(ld); err != nil {
+		return fmt.Errorf("logdir %q: %w", ld, err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	tl := tail.New(*logdir, allow)
-	sh := ship.New(*server, *token)
-	log.Printf("watching %s every %s; server=%s (channels managed in the Intel tab; --channels seed=[%s])",
-		*logdir, *poll, *server, strings.Join(allow, ","))
+	tl := tail.New(ld, allow)
+	sh := ship.New(srv, tok)
+	log.Printf("watching %s every %s; server=%s (channels managed in the Intel tab; seed=[%s])",
+		ld, *poll, srv, strings.Join(allow, ","))
 
 	return loop(ctx, tl, sh, *poll)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // syncInterval is how often the shipper reports the channels it has seen and refreshes
@@ -122,6 +151,7 @@ func loop(ctx context.Context, tl *tail.Tailer, sh *ship.Shipper, poll time.Dura
 	var pending []tail.Line
 	var fails int
 	var nextAttempt time.Time
+	var lastState time.Time // throttle heartbeat writes
 
 	for {
 		select {
@@ -149,6 +179,10 @@ func loop(ctx context.Context, tl *tail.Tailer, sh *ship.Shipper, poll time.Dura
 		switch {
 		case err == nil:
 			pending, fails, nextAttempt = nil, 0, time.Time{}
+			if now := time.Now(); now.Sub(lastState) > 30*time.Second { // heartbeat for `status`
+				_ = config.SaveState(config.State{LastShip: now})
+				lastState = now
+			}
 		case errors.Is(err, ship.ErrProtocol):
 			return err
 		case ctx.Err() != nil:
