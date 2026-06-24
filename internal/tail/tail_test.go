@@ -5,8 +5,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
+
+// A month-old log file (a channel you left) must not be tailed or reported as seen.
+func TestTailer_IgnoresStaleChannels(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "OHGOD Public_20260520_184247_1.txt")
+	cur := filepath.Join(dir, "Skumbanan_20260623_190000_2.txt")
+	writeFile(t, old, header("OHGOD Public")+msg("ancient"))
+	writeFile(t, cur, header("Skumbanan")+msg("recent"))
+	monthAgo := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(old, monthAgo, monthAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	tl := New(dir, []string{"Skumbanan"})
+	tl.Poll()
+	if got := strings.Join(tl.Seen(), ","); got != "Skumbanan" {
+		t.Fatalf("Seen() = %q, want only Skumbanan (stale OHGOD excluded)", got)
+	}
+}
 
 func u16le(s string) []byte {
 	var b []byte

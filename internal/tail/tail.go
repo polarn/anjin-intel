@@ -14,10 +14,18 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/polarn/anjin-intel/internal/chatlog"
 )
+
+// channelRecency bounds which log files count as a "current" channel: a file not
+// written within this window is an old session (a channel you left), so it's ignored
+// — not tailed, and not reported to the picker. EVE writes a fresh per-session file
+// on join, so active channels always have a recent mtime; rejoining makes a new file,
+// so a skipped stale file never needs reviving.
+const channelRecency = 24 * time.Hour
 
 // Line is a parsed message tagged with its channel.
 type Line struct {
@@ -40,6 +48,7 @@ type Tailer struct {
 	dir     string
 	allow   map[string]bool
 	files   map[string]*file
+	skip    map[string]bool // files judged stale once, so we don't re-stat them every poll
 	seen    map[string]bool // every channel name observed in the dir (for discovery)
 	started bool            // false until the first Poll registers the startup set
 }
@@ -47,7 +56,7 @@ type Tailer struct {
 // New builds a Tailer for dir, seeded with the channels in allow (the server
 // allowlist later overrides this via SetAllowlist).
 func New(dir string, allow []string) *Tailer {
-	return &Tailer{dir: dir, allow: toSet(allow), files: map[string]*file{}, seen: map[string]bool{}}
+	return &Tailer{dir: dir, allow: toSet(allow), files: map[string]*file{}, skip: map[string]bool{}, seen: map[string]bool{}}
 }
 
 func toSet(items []string) map[string]bool {
@@ -112,13 +121,23 @@ func (t *Tailer) Poll() []Line {
 
 	var out []Line
 	for _, name := range names {
+		if t.skip[name] {
+			continue
+		}
+		path := filepath.Join(t.dir, name)
 		f := t.files[name]
 		if f == nil {
-			f = t.register(filepath.Join(t.dir, name), name, startup)
+			// First encounter: ignore old-session files (a channel you left) — don't
+			// tail or report them. Stat once, then remember the decision.
+			if info, err := os.Stat(path); err != nil || time.Since(info.ModTime()) > channelRecency {
+				t.skip[name] = true
+				continue
+			}
+			f = t.register(path, name, startup)
 			t.files[name] = f
 		}
 		if f.allowed {
-			out = append(out, t.read(filepath.Join(t.dir, name), f)...)
+			out = append(out, t.read(path, f)...)
 		}
 	}
 	return out
