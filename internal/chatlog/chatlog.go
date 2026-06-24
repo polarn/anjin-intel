@@ -82,5 +82,13 @@ func ParseLine(line string) (Entry, bool) {
 	if err != nil {
 		return Entry{}, false
 	}
-	return Entry{TS: ts, Sender: strings.TrimSpace(m[2]), Message: m[3]}, true
+	sender := strings.TrimSpace(m[2])
+	if sender == systemSender {
+		return Entry{}, false // channel MOTD / system notices — not intel
+	}
+	return Entry{TS: ts, Sender: sender, Message: m[3]}, true
 }
+
+// systemSender is EVE's automated pseudo-sender: it posts the channel MOTD (shown on
+// join) and other notices, never player intel — so we drop its lines.
+const systemSender = "EVE System"
