@@ -68,6 +68,11 @@ func ChannelFromFilename(name string) string {
 // line (header lines, separators, blanks) — so callers can feed every line through
 // it and only message lines come out. A trailing CR (CRLF logs) is tolerated.
 func ParseLine(line string) (Entry, bool) {
+	// EVE re-emits a UTF-16 BOM (U+FEFF) before a line group whenever it reopens
+	// the file (e.g. after idle), so an appended message can arrive with a leading
+	// BOM: U+FEFF then "[ ... ] sender > msg". Strip it so the timestamp anchor
+	// still matches. (Escape, never a raw BOM in Go source.)
+	line = strings.TrimLeft(line, "\ufeff")
 	line = strings.TrimRight(line, "\r")
 	m := lineRE.FindStringSubmatch(line)
 	if m == nil {

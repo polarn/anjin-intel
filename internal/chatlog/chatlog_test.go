@@ -73,6 +73,7 @@ func TestParseLine(t *testing.T) {
 	}{
 		{"message", "[ 2026.06.23 19:04:11 ] Some Pilot > neut in FD-MLJ", true, "Some Pilot", "neut in FD-MLJ"},
 		{"message with arrow in body", "[ 2026.06.23 19:05:02 ] Scout Alt > gate > camp", true, "Scout Alt", "gate > camp"},
+		{"leading BOM (EVE reopen quirk)", "\ufeff[ 2026.06.24 09:15:28 ] gatupojken > ddwqdqwd", true, "gatupojken", "ddwqdqwd"},
 		{"crlf tolerated", "[ 2026.06.23 19:04:11 ] X > hi\r", true, "X", "hi"},
 		{"header line", "  Channel Name:    Querious.imperium", false, "", ""},
 		{"separator", "-----------------------------", false, "", ""},
