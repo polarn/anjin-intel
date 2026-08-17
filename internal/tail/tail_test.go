@@ -1,6 +1,8 @@
 package tail
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,5 +181,83 @@ func TestTailer_PartialLineAndOddByteCarry(t *testing.T) {
 	got := tl.Poll()
 	if len(got) != 1 || got[0].Entry.Message != "split message" {
 		t.Fatalf("want 'split message' after odd-byte carry, got %v", got)
+	}
+}
+
+// An unreadable log must be reported — once — instead of silently producing no
+// intel, and it must not stop other channels from shipping. This is the failure
+// mode a locked file on Windows would take.
+func TestTailer_UnreadableFileWarnsOnceAndKeepsGoing(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "Broken_20260623_190000_1.txt")
+	fine := filepath.Join(dir, "Local_20260623_190000_2.txt")
+	writeFile(t, broken, header("Broken"))
+	writeFile(t, fine, header("Local"))
+
+	tl := New(dir, []string{"Broken", "Local"})
+	tl.Poll() // startup: register both, skip to EOF
+
+	appendBytes(t, broken, u16le(msg("never readable")))
+	appendBytes(t, fine, u16le(msg("still flowing")))
+	if err := os.Chmod(broken, 0o000); err != nil {
+		t.Skipf("cannot make a file unreadable here: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(broken, 0o644) })
+	if fh, err := os.Open(broken); err == nil { // running as root: the chmod means nothing
+		fh.Close()
+		t.Skip("running as root; unreadable-file case cannot be exercised")
+	}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	var good int
+	for range 3 {
+		for _, l := range tl.Poll() {
+			if l.Entry.Message == "still flowing" {
+				good++
+			}
+		}
+	}
+	if good != 1 {
+		t.Errorf("healthy channel yielded %d lines, want 1 (a broken sibling must not block it)", good)
+	}
+	if n := strings.Count(buf.String(), "cannot open"); n != 1 {
+		t.Errorf("logged %d open warnings across 3 polls, want exactly 1:\n%s", n, buf.String())
+	}
+
+	// Recovery re-arms the warning, so a fault that comes back is reported again.
+	if err := os.Chmod(broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := bodies(tl.Poll()); len(got) != 1 || got[0] != "never readable" {
+		t.Fatalf("after recovery want [never readable], got %v", got)
+	}
+	buf.Reset()
+	if err := os.Chmod(broken, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	appendBytes(t, fine, u16le(msg("more")))
+	tl.Poll()
+	if n := strings.Count(buf.String(), "cannot open"); n != 1 {
+		t.Errorf("recurring fault logged %d times, want 1:\n%s", n, buf.String())
+	}
+}
+
+// A bad --logdir must say so rather than looking like a set of quiet channels.
+func TestTailer_MissingDirWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	tl := New(filepath.Join(t.TempDir(), "does-not-exist"), []string{"Local"})
+	for range 3 {
+		if got := tl.Poll(); got != nil {
+			t.Fatalf("want no lines, got %v", got)
+		}
+	}
+	if n := strings.Count(buf.String(), "cannot read log dir"); n != 1 {
+		t.Errorf("logged %d dir warnings across 3 polls, want exactly 1:\n%s", n, buf.String())
 	}
 }

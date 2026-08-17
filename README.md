@@ -14,18 +14,32 @@ library (trivially auditable, reproducible), and **read-only** — it tails the 
 directory and POSTs; it never writes to the game and never touches anything but the
 channels you explicitly allow. Default is *no* channels.
 
-> **Scope:** Linux first (Steam/Proton, Lutris). macOS + Windows are a planned
+> **Scope:** Linux (Steam/Proton, Lutris) and Windows. On Windows there's no
+> background install yet — you run it in a terminal; see below. macOS is a planned
 > follow-up.
 
 ## Get it
 
-Download the latest Linux/amd64 binary from [Releases](https://github.com/polarn/anjin-intel/releases/latest):
+Grab the binary for your OS from [Releases](https://github.com/polarn/anjin-intel/releases/latest).
+
+**Linux:**
 
 ```sh
 curl -fsSL -o anjin-intel \
   https://github.com/polarn/anjin-intel/releases/latest/download/anjin-intel-linux-amd64
 chmod +x anjin-intel
 ```
+
+**Windows** (PowerShell):
+
+```powershell
+Invoke-WebRequest -OutFile anjin-intel.exe `
+  https://github.com/polarn/anjin-intel/releases/latest/download/anjin-intel-windows-amd64.exe
+```
+
+The binary isn't code-signed (a certificate is hard to justify for a tool with a
+handful of users), so Windows SmartScreen may warn on first run: **More info → Run
+anyway**. The `SHA256SUMS` + provenance attestation below are the real check.
 
 Each release ships a `SHA256SUMS` and a [SLSA build provenance](https://slsa.dev)
 attestation, so you can verify the binary came from this repo's CI (not a hand-built
@@ -43,8 +57,10 @@ go build -o anjin-intel ./cmd/anjin-intel
 
 ## Usage
 
-**Install** (Linux) — registers a systemd *user* service that runs the shipper at
-login and copies the binary to `~/.local/bin`:
+### Linux
+
+**Install** — registers a systemd *user* service that runs the shipper at login and
+copies the binary to `~/.local/bin`:
 
 ```sh
 anjin-intel install \
@@ -61,12 +77,30 @@ anjin-intel status      # installed? running? server reachable? last ship?
 anjin-intel uninstall   # stop + remove the service, binary and config
 ```
 
-**Run in the foreground** (no install — e.g. to try it, or on macOS/Windows):
+### Windows
+
+There's no `install` on Windows yet, so run it in a terminal and leave it open:
+
+```powershell
+.\anjin-intel.exe run --server https://anjin.example.net --token <enrollment-token>
+```
+
+`--logdir` is optional: the Chatlogs directory is found by asking Windows where your
+Documents folder actually is. That matters because the folder is both **localized**
+(it's `Dokument` on a Swedish install) and **relocatable** — OneDrive moves it under
+`%USERPROFILE%\OneDrive` by default on Windows 11 — so there's no single path to
+hardcode. If you have both a live and an old copy, the one EVE most recently wrote to
+wins. Pass `--logdir` to override.
+
+Then pick your channels in the **Intel tab**, same as Linux.
+
+### Run in the foreground (any OS)
 
 ```sh
-anjin-intel run --server <url> --token <tok> --logdir <EVE/logs/Chatlogs> [--channels a,b]
+anjin-intel run --server <url> --token <tok> [--logdir <EVE/logs/Chatlogs>]
 ```
 
 `run` reads the install config when flags are omitted (that's how the service starts
-it). It only ships lines written *after* it starts (no backfill); `--channels` is just
-an optional offline/first-run seed. See [SPEC.md](SPEC.md) for the server contract.
+it), and auto-detects `--logdir` when neither supplies one. It only ships lines written
+*after* it starts (no backfill); `--channels` is just an optional offline/first-run
+seed. See [SPEC.md](SPEC.md) for the server contract.

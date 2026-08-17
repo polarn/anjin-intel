@@ -10,6 +10,7 @@
 package tail
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -51,13 +52,30 @@ type Tailer struct {
 	skip    map[string]bool // files judged stale once, so we don't re-stat them every poll
 	seen    map[string]bool // every channel name observed in the dir (for discovery)
 	started bool            // false until the first Poll registers the startup set
+	warned  map[string]bool // problems already reported, so a poll loop can't spam
 }
 
 // New builds a Tailer for dir, seeded with the channels in allow (the server
 // allowlist later overrides this via SetAllowlist).
 func New(dir string, allow []string) *Tailer {
-	return &Tailer{dir: dir, allow: toSet(allow), files: map[string]*file{}, skip: map[string]bool{}, seen: map[string]bool{}}
+	return &Tailer{dir: dir, allow: toSet(allow), files: map[string]*file{}, skip: map[string]bool{}, seen: map[string]bool{}, warned: map[string]bool{}}
 }
+
+// warnOnce logs a problem the first time it's seen under key and stays quiet after
+// that. Reads are best-effort — one unreadable file must never stop the loop — but
+// staying *silent* is what made a broken setup look identical to a quiet channel:
+// a wrong --logdir, or a file the OS won't share with us, produced no lines and no
+// explanation. clearWarn re-arms the key so a recurring fault is reported again
+// once it has recovered in between.
+func (t *Tailer) warnOnce(key, format string, args ...any) {
+	if t.warned[key] {
+		return
+	}
+	t.warned[key] = true
+	log.Printf(format, args...)
+}
+
+func (t *Tailer) clearWarn(key string) { delete(t.warned, key) }
 
 func toSet(items []string) map[string]bool {
 	m := make(map[string]bool, len(items))
@@ -106,8 +124,10 @@ const headerProbe = 8 << 10
 func (t *Tailer) Poll() []Line {
 	entries, err := os.ReadDir(t.dir)
 	if err != nil {
+		t.warnOnce("dir", "cannot read log dir %s: %v (wrong --logdir?)", t.dir, err)
 		return nil
 	}
+	t.clearWarn("dir")
 	startup := !t.started
 	t.started = true
 
@@ -167,6 +187,7 @@ func (t *Tailer) register(path, name string, startup bool) *file {
 func (t *Tailer) resolveChannel(path, name string) string {
 	fh, err := os.Open(path)
 	if err != nil {
+		t.warnOnce("hdr:"+name, "cannot read header of %s: %v (falling back to the filename)", name, err)
 		return chatlog.ChannelFromFilename(name)
 	}
 	defer fh.Close()
@@ -182,8 +203,13 @@ func (t *Tailer) resolveChannel(path, name string) string {
 func (t *Tailer) read(path string, f *file) []Line {
 	fh, err := os.Open(path)
 	if err != nil {
+		// The one failure that must never be silent: if the OS won't let us read a
+		// log the game is holding open, the shipper would otherwise look perfectly
+		// healthy while shipping nothing at all.
+		t.warnOnce("open:"+path, "cannot open %s: %v — no intel will ship from this channel", path, err)
 		return nil
 	}
+	t.clearWarn("open:" + path)
 	defer fh.Close()
 	info, err := fh.Stat()
 	if err != nil || info.Size() <= f.offset {

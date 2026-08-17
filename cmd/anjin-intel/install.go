@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,7 +139,13 @@ func uninstall(args []string) error {
 func status(_ []string) error {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Println("not installed (no config). run: anjin-intel install --server <url> --token <tok>")
+		// Don't point Windows users at `install` — it refuses there (no autostart
+		// backend yet), so the only thing that works is running in the foreground.
+		if runtime.GOOS == "linux" {
+			fmt.Println("not installed (no config). run: anjin-intel install --server <url> --token <tok>")
+		} else {
+			fmt.Println("no saved config. run: anjin-intel run --server <url> --token <tok>")
+		}
 		return nil
 	}
 	fmt.Printf("server:    %s\n", cfg.Server)
@@ -210,42 +215,4 @@ func copyFile(src, dst string) error {
 	return os.Rename(tmp, dst) // atomic; replacing a running binary is fine on Linux
 }
 
-// detectSkip are big/irrelevant directories we never descend into when searching for
-// the Chatlogs dir (Steam dirs are intentionally NOT here — Proton prefixes live there).
-var detectSkip = map[string]bool{
-	".cache": true, ".cargo": true, ".rustup": true, ".npm": true, ".gradle": true,
-	".m2": true, "node_modules": true, ".git": true, "go": true, ".venv": true,
-	"__pycache__": true, ".mozilla": true, ".thunderbird": true,
-}
-
-// detectLogdir best-effort finds the EVE Chatlogs dir under $HOME, across any layout
-// (native, Steam/Proton, Lutris, Faugus, Bottles…) by a bounded walk — globs can't
-// match the variable wrapper depth (e.g. ~/Faugus/eve-online/drive_c/...). Prefers the
-// most recently written match (the active install).
-func detectLogdir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	var best string
-	var bestMod time.Time
-	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		if path != home && detectSkip[d.Name()] {
-			return fs.SkipDir
-		}
-		if rel, e := filepath.Rel(home, path); e == nil && strings.Count(rel, string(os.PathSeparator)) > 12 {
-			return fs.SkipDir // depth cap
-		}
-		if d.Name() == "Chatlogs" && strings.HasSuffix(filepath.ToSlash(filepath.Dir(path)), "EVE/logs") {
-			if info, e := d.Info(); e == nil && info.ModTime().After(bestMod) {
-				best, bestMod = path, info.ModTime()
-			}
-			return fs.SkipDir // found it; don't descend into the logs
-		}
-		return nil
-	})
-	return best
-}
+// detectLogdir lives in detect_<goos>.go — the Chatlogs location is OS-specific.

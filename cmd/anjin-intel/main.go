@@ -58,11 +58,12 @@ func usage() {
 
 Usage:
   anjin-intel install --server <url> --token <tok> [--logdir <path>] [--channels a,b]
-  anjin-intel run     [--server <url> --token <tok> --logdir <path>]   (reads the install config if omitted)
+  anjin-intel run     --server <url> --token <tok> [--logdir <path>]   (reads the install config if omitted)
   anjin-intel status
   anjin-intel uninstall
 
 install registers a systemd user service that runs the shipper at login (Linux).
+On Windows there is no install yet — use run, which auto-detects the Chatlogs dir.
 Channels are managed in the Intel tab; --channels is just an optional seed.
 `)
 }
@@ -91,8 +92,16 @@ func runCmd(args []string) error {
 		allow = cfg.Channels
 	}
 
-	if srv == "" || tok == "" || ld == "" {
-		return errors.New("need --server, --token and --logdir (or run `anjin-intel install` first)")
+	if srv == "" || tok == "" {
+		return errors.New("need --server and --token (or run `anjin-intel install` first)")
+	}
+	// No logdir configured: find it. This is what lets Windows users run the binary
+	// directly (there's no `install` there yet) without hand-typing the path.
+	if ld == "" {
+		if ld = detectLogdir(); ld == "" {
+			return errors.New("could not find the EVE Chatlogs directory — pass --logdir")
+		}
+		log.Printf("detected logdir: %s", ld)
 	}
 	if _, err := os.Stat(ld); err != nil {
 		return fmt.Errorf("logdir %q: %w", ld, err)
