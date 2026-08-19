@@ -1,17 +1,22 @@
 // Package config is the shipper's per-user state: the install config (server, token,
 // logdir, channel seed, installed binary path) and a tiny heartbeat (last successful
-// ship). Lives under the XDG config dir (~/.config/anjin-intel), config.json mode
-// 0600 since it holds the enrollment token.
+// ship). Lives under os.UserConfigDir — ~/.config/anjin-intel on Linux,
+// %AppData%\anjin-intel on Windows — with config.json mode 0600 since it holds the
+// enrollment token. (Those bits are inert on Windows, which has no POSIX mode.)
 package config
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
-const appDir = "anjin-intel"
+const (
+	appDir  = "anjin-intel"
+	appName = "anjin" // vendor dir under %LOCALAPPDATA%\Programs on Windows
+)
 
 // Config is what `install` writes and `run` reads when flags are absent (so the
 // autostart unit can invoke `anjin-intel run` with no arguments).
@@ -113,8 +118,30 @@ func SaveState(s State) error {
 	return os.WriteFile(p, b, 0o600)
 }
 
-// DefaultBinDir is where `install` copies the binary (~/.local/bin).
+// BinName is the installed binary's filename. Windows needs the .exe suffix to run
+// it by name at all, so this is not cosmetic.
+func BinName() string {
+	if runtime.GOOS == "windows" {
+		return "anjin-intel.exe"
+	}
+	return "anjin-intel"
+}
+
+// DefaultBinDir is where `install` copies the binary: ~/.local/bin on Unix, and
+// %LOCALAPPDATA%\Programs\anjin on Windows — the path docs/WINDOWS_INSTALLER_PLAN.md
+// pins, so a later Task Scheduler action can point at the same place without moving
+// anyone's files.
 func DefaultBinDir() (string, error) {
+	if runtime.GOOS == "windows" {
+		if la := os.Getenv("LOCALAPPDATA"); la != "" {
+			return filepath.Join(la, "Programs", appName), nil
+		}
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(h, "AppData", "Local", "Programs", appName), nil
+	}
 	h, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

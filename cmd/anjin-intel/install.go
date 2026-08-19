@@ -34,18 +34,21 @@ RestartSec=10
 WantedBy=default.target
 `
 
-// install copies the running binary to a stable per-user path, saves the config,
-// and registers a systemd user unit that runs it at login. Idempotent.
+// install copies the running binary to a stable per-user path, saves the config, and
+// — on Linux — registers a systemd user unit that runs it at login. Idempotent.
+//
+// Only that last step is OS-specific. It used to gate the whole command, which left
+// Windows with no way to persist the enrollment token at all: `run` reads the saved
+// config (see runCmd) but nothing was ever allowed to write it, so the token had to go
+// on the command line every time — and straight into shell history with it. Everything
+// up to the autostart block is portable, so it now runs everywhere.
 func install(args []string) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("`install` is Linux-only for now — run `anjin-intel run …` directly on macOS/Windows")
-	}
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	server := fs.String("server", "", "anjin server base URL")
 	token := fs.String("token", "", "enrollment token from the Intel tab")
 	logdir := fs.String("logdir", "", "EVE Chatlogs directory (auto-detected if omitted)")
 	channels := fs.String("channels", "", "optional comma-separated channel seed (the Intel tab is authoritative)")
-	binDir := fs.String("bin-dir", "", "where to install the binary (default ~/.local/bin)")
+	binDir := fs.String("bin-dir", "", "where to install the binary (default ~/.local/bin, or %LOCALAPPDATA%\\Programs\\anjin on Windows)")
 	fs.Parse(args)
 
 	if *server == "" || *token == "" {
@@ -72,7 +75,7 @@ func install(args []string) error {
 	if err := os.MkdirAll(bd, 0o755); err != nil {
 		return err
 	}
-	bin := filepath.Join(bd, "anjin-intel")
+	bin := filepath.Join(bd, config.BinName())
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -85,6 +88,16 @@ func install(args []string) error {
 
 	if err := (config.Config{Server: *server, Token: *token, Logdir: ld, Channels: splitList(*channels), Bin: bin}).Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
+	}
+
+	cfgPath, _ := config.Path()
+
+	// Autostart is the only Linux-specific part. Elsewhere the install still did its
+	// real job — the token is saved — so report that rather than failing.
+	if runtime.GOOS != "linux" {
+		fmt.Printf("installed.\n  binary:    %s\n  config:    %s\nNo autostart backend on %s yet, so start it yourself (no flags needed — it reads the config):\n  %s run\nChannels are managed in the Intel tab.\n",
+			bin, cfgPath, runtime.GOOS, bin)
+		return nil
 	}
 
 	unitPath, err := config.UnitPath()
@@ -108,30 +121,45 @@ func install(args []string) error {
 		return err
 	}
 
-	cfgPath, _ := config.Path()
 	fmt.Printf("installed.\n  binary:    %s\n  config:    %s\n  autostart: %s\nRunning now and at login. Channels are managed in the Intel tab.\n", bin, cfgPath, unitPath)
 	return nil
 }
 
-// uninstall stops + removes the autostart unit and deletes the binary + config.
+// uninstall stops + removes the autostart unit (Linux) and deletes the binary + config.
+// It must mirror install: now that install saves a config everywhere, uninstall has to
+// be able to delete it everywhere, or the token would be unremovable off Linux.
 func uninstall(args []string) error {
-	if runtime.GOOS != "linux" {
-		return errors.New("`uninstall` is Linux-only")
+	if runtime.GOOS == "linux" {
+		_ = systemctl("disable", "--now", unitName) // best-effort
+		if unitPath, err := config.UnitPath(); err == nil {
+			os.Remove(unitPath)
+		}
+		_ = systemctl("daemon-reload")
 	}
-	_ = systemctl("disable", "--now", unitName) // best-effort
-	if unitPath, err := config.UnitPath(); err == nil {
-		os.Remove(unitPath)
-	}
-	_ = systemctl("daemon-reload")
 
 	cfg, _ := config.Load()
+	binGone := true
 	if cfg.Bin != "" {
-		os.Remove(cfg.Bin)
+		if err := os.Remove(cfg.Bin); err != nil && !os.IsNotExist(err) {
+			// Windows refuses to delete a running image, and a shipper started from
+			// the installed path is the likely reason. Say so instead of claiming
+			// success — the config is gone either way, so the leftover is inert.
+			binGone = false
+			fmt.Printf("could not delete %s: %v\n(stop a running shipper first, then delete it by hand)\n", cfg.Bin, err)
+		}
 	}
 	if d, err := config.Dir(); err == nil {
 		os.RemoveAll(d)
 	}
-	fmt.Println("uninstalled: autostart removed, binary + config deleted.")
+	what := "binary + config deleted"
+	if !binGone {
+		what = "config deleted; binary left behind (see above)"
+	}
+	if runtime.GOOS == "linux" {
+		fmt.Printf("uninstalled: autostart removed, %s.\n", what)
+	} else {
+		fmt.Printf("uninstalled: %s.\n", what)
+	}
 	return nil
 }
 
@@ -139,13 +167,7 @@ func uninstall(args []string) error {
 func status(_ []string) error {
 	cfg, err := config.Load()
 	if err != nil {
-		// Don't point Windows users at `install` — it refuses there (no autostart
-		// backend yet), so the only thing that works is running in the foreground.
-		if runtime.GOOS == "linux" {
-			fmt.Println("not installed (no config). run: anjin-intel install --server <url> --token <tok>")
-		} else {
-			fmt.Println("no saved config. run: anjin-intel run --server <url> --token <tok>")
-		}
+		fmt.Println("not installed (no config). run: anjin-intel install --server <url> --token <tok>")
 		return nil
 	}
 	fmt.Printf("server:    %s\n", cfg.Server)
@@ -155,6 +177,10 @@ func status(_ []string) error {
 	}
 	if runtime.GOOS == "linux" {
 		fmt.Printf("autostart: %s\n", systemctlOut("is-active", unitName))
+	} else {
+		// Say it plainly rather than omitting the line: a missing field reads as
+		// "couldn't tell", when the truth is there's nothing to start it.
+		fmt.Printf("autostart: unavailable on %s — start it with `anjin-intel run`\n", runtime.GOOS)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

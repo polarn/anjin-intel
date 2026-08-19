@@ -14,9 +14,9 @@ library (trivially auditable, reproducible), and **read-only** — it tails the 
 directory and POSTs; it never writes to the game and never touches anything but the
 channels you explicitly allow. Default is *no* channels.
 
-> **Scope:** Linux (Steam/Proton, Lutris) and Windows. On Windows there's no
-> background install yet — you run it in a terminal; see below. macOS is a planned
-> follow-up.
+> **Scope:** Linux (Steam/Proton, Lutris) and Windows. `install` works on both, but
+> only Linux starts the shipper at login — on Windows you launch it yourself. macOS is
+> a planned follow-up.
 
 ## Get it
 
@@ -79,7 +79,24 @@ anjin-intel uninstall   # stop + remove the service, binary and config
 
 ### Windows
 
-There's no `install` on Windows yet, so run it in a terminal and leave it open:
+**Install** — saves the config and copies the binary to
+`%LOCALAPPDATA%\Programs\anjin`. There's no autostart backend on Windows yet, so it
+does *not* start at login:
+
+```powershell
+.\anjin-intel.exe install --server https://anjin.example.net --token <enrollment-token>
+```
+
+Then run it in a terminal and leave the window open — no flags, it reads the config:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\anjin\anjin-intel.exe" run
+```
+
+Installing first is worth it even without autostart: otherwise the token goes on the
+command line every time, and straight into PowerShell's history file with it.
+
+You can skip `install` and pass the flags each time if you prefer:
 
 ```powershell
 .\anjin-intel.exe run --server https://anjin.example.net --token <enrollment-token>
@@ -92,7 +109,9 @@ Documents folder actually is. That matters because the folder is both **localize
 hardcode. If you have both a live and an old copy, the one EVE most recently wrote to
 wins. Pass `--logdir` to override.
 
-Then pick your channels in the **Intel tab**, same as Linux.
+Then pick your channels in the **Intel tab**, same as Linux. `status` and `uninstall`
+work here too — `uninstall` deletes the binary and config, with no service to stop
+(Windows won't delete a running `.exe`, so stop the shipper first).
 
 ### Run in the foreground (any OS)
 

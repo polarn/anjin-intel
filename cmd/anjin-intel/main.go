@@ -62,8 +62,9 @@ Usage:
   anjin-intel status
   anjin-intel uninstall
 
-install registers a systemd user service that runs the shipper at login (Linux).
-On Windows there is no install yet — use run, which auto-detects the Chatlogs dir.
+install saves the config (server, token, logdir) and copies the binary, so later runs
+need no flags. On Linux it also registers a systemd user service to start at login;
+elsewhere there's no autostart yet, so run it yourself: anjin-intel run, no flags.
 Channels are managed in the Intel tab; --channels is just an optional seed.
 `)
 }
@@ -95,8 +96,8 @@ func runCmd(args []string) error {
 	if srv == "" || tok == "" {
 		return errors.New("need --server and --token (or run `anjin-intel install` first)")
 	}
-	// No logdir configured: find it. This is what lets Windows users run the binary
-	// directly (there's no `install` there yet) without hand-typing the path.
+	// No logdir configured: find it, so the binary works straight from a download with
+	// nothing but --server/--token (and, after `install`, with no flags at all).
 	if ld == "" {
 		if ld = detectLogdir(); ld == "" {
 			return errors.New("could not find the EVE Chatlogs directory — pass --logdir")

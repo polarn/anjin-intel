@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,5 +66,42 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	if !got.LastShip.Equal(now) {
 		t.Errorf("LastShip = %v, want %v", got.LastShip, now)
+	}
+}
+
+func TestBinName(t *testing.T) {
+	got := BinName()
+	// Windows won't execute a file by name without the suffix, so this is load-bearing
+	// rather than cosmetic.
+	if runtime.GOOS == "windows" {
+		if got != "anjin-intel.exe" {
+			t.Errorf("BinName() = %q, want anjin-intel.exe on windows", got)
+		}
+		return
+	}
+	if got != "anjin-intel" {
+		t.Errorf("BinName() = %q, want anjin-intel", got)
+	}
+}
+
+func TestDefaultBinDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("LOCALAPPDATA", `C:\Users\test\AppData\Local`)
+		got, err := DefaultBinDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(`C:\Users\test\AppData\Local`, "Programs", "anjin")
+		if got != want {
+			t.Errorf("DefaultBinDir() = %q, want %q", got, want)
+		}
+		return
+	}
+	got, err := DefaultBinDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(got), "/.local/bin") {
+		t.Errorf("DefaultBinDir() = %q, want it to end in /.local/bin", got)
 	}
 }
