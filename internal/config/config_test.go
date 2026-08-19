@@ -2,12 +2,29 @@ package config
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
 
+// isolateConfigDir points os.UserConfigDir at a temp dir. Which env var does that
+// is per-OS — XDG_CONFIG_HOME on Linux, %AppData% on Windows, $HOME (Library/
+// Application Support) on macOS — so setting only the Linux one would silently
+// leave these tests reading and writing the developer's real config.
+func isolateConfigDir(t *testing.T) {
+	t.Helper()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("AppData", t.TempDir())
+	case "darwin":
+		t.Setenv("HOME", t.TempDir())
+	default:
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	}
+}
+
 func TestConfigRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigDir(t)
 	c := Config{Server: "https://anjin.example.net", Token: "tok123", Logdir: "/logs", Channels: []string{"Local", "Corp"}, Bin: "/home/x/.local/bin/anjin-intel"}
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
@@ -19,7 +36,12 @@ func TestConfigRoundTrip(t *testing.T) {
 	if got.Server != c.Server || got.Token != c.Token || got.Logdir != c.Logdir || got.Bin != c.Bin || len(got.Channels) != 2 {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
-	// The token is sensitive — the file must be 0600.
+	// The token is sensitive — the file must be 0600. Windows has no POSIX mode
+	// bits (Go reports 0666 regardless of what we passed), so assert only where
+	// the bits are real; the check must stay strict on Unix.
+	if runtime.GOOS == "windows" {
+		return
+	}
 	p, _ := Path()
 	info, err := os.Stat(p)
 	if err != nil {
@@ -31,7 +53,7 @@ func TestConfigRoundTrip(t *testing.T) {
 }
 
 func TestStateRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfigDir(t)
 	now := time.Now().Truncate(time.Second)
 	if err := SaveState(State{LastShip: now}); err != nil {
 		t.Fatal(err)
