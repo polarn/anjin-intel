@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -17,31 +15,14 @@ import (
 	"github.com/polarn/anjin-intel/internal/ship"
 )
 
-const unitName = "anjin-intel.service"
-
-// unitFmt is the systemd user unit (one %s: the absolute binary path). It runs
-// `<bin> run` (which reads the saved config) at login and restarts on crash.
-const unitFmt = `[Unit]
-Description=anjin-intel — EVE chat-intel shipper
-After=network-online.target
-
-[Service]
-ExecStart=%s run
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-`
-
 // install copies the running binary to a stable per-user path, saves the config, and
-// — on Linux — registers a systemd user unit that runs it at login. Idempotent.
+// registers the OS's login launcher (see autostart.go). Idempotent.
 //
-// Only that last step is OS-specific. It used to gate the whole command, which left
-// Windows with no way to persist the enrollment token at all: `run` reads the saved
-// config (see runCmd) but nothing was ever allowed to write it, so the token had to go
-// on the command line every time — and straight into shell history with it. Everything
-// up to the autostart block is portable, so it now runs everywhere.
+// The flow is deliberately ordered so the valuable, unprivileged part happens first:
+// detect → stop any running copy → copy binary → save config → register autostart. If
+// the last step fails or isn't supported, the shipper is still fully configured and
+// `anjin-intel run` works with no flags — which is the difference between a partial
+// install and a useless one.
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	server := fs.String("server", "", "anjin server base URL")
@@ -75,12 +56,23 @@ func install(args []string) error {
 	if err := os.MkdirAll(bd, 0o755); err != nil {
 		return err
 	}
+	// Clear a leftover from a previous overwrite-while-running (see copyFile).
+	os.Remove(filepath.Join(bd, config.BinName()+".old"))
 	bin := filepath.Join(bd, config.BinName())
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if self != bin {
+
+	auto := newAutostarter()
+
+	// Windows locks a running image, so a re-install over a live shipper fails unless
+	// it is stopped first. No-op on Linux, where the rename-over-running trick works.
+	_ = auto.Stop()
+
+	// EqualFold, not !=: Windows paths are case-insensitive, so C:\Users\… and
+	// c:\users\… are the same file and copying one onto itself would truncate it.
+	if !strings.EqualFold(self, bin) {
 		if err := copyFile(self, bin); err != nil {
 			return fmt.Errorf("install binary: %w", err)
 		}
@@ -89,77 +81,65 @@ func install(args []string) error {
 	if err := (config.Config{Server: *server, Token: *token, Logdir: ld, Channels: splitList(*channels), Bin: bin}).Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-
 	cfgPath, _ := config.Path()
 
-	// Autostart is the only Linux-specific part. Elsewhere the install still did its
-	// real job — the token is saved — so report that rather than failing.
-	if runtime.GOOS != "linux" {
-		fmt.Printf("installed.\n  binary:    %s\n  config:    %s\nNo autostart backend on %s yet, so start it yourself (no flags needed — it reads the config):\n  %s run\nChannels are managed in the Intel tab.\n",
-			bin, cfgPath, runtime.GOOS, bin)
+	err = auto.Register(bin)
+	switch {
+	case err == nil:
+		fmt.Printf("installed.\n  binary:    %s\n  config:    %s\n  autostart: %s\nRunning now and at login. Channels are managed in the Intel tab.\n",
+			bin, cfgPath, auto.State())
 		return nil
-	}
 
-	unitPath, err := config.UnitPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(unitPath, []byte(fmt.Sprintf(unitFmt, bin)), 0o644); err != nil {
-		return err
-	}
+	case errors.Is(err, errAutostartUnsupported):
+		fmt.Printf("installed.\n  binary:    %s\n  config:    %s\nNo autostart backend on this OS yet, so start it yourself (no flags needed — it reads the config):\n  %s run\nChannels are managed in the Intel tab.\n",
+			bin, cfgPath, bin)
+		return nil
 
-	if err := systemctl("daemon-reload"); err != nil {
-		return err
-	}
-	if err := systemctl("enable", unitName); err != nil {
-		return err
-	}
-	if err := systemctl("restart", unitName); err != nil { // start, or restart to pick up a re-install
-		return err
-	}
+	case errors.Is(err, errElevationDeclined):
+		// Everything up to registration succeeded. Say exactly that, and exit non-zero
+		// so a script doesn't mistake a half-install for a whole one.
+		fmt.Printf("configured, but NOT set to start at login.\n  binary:    %s\n  config:    %s\n\nRegistering a scheduled task needs elevation and the prompt was declined.\nRun the shipper by hand with:\n  %s run\nor re-run `%s install …` and accept the prompt.\n",
+			bin, cfgPath, bin, bin)
+		return errors.New("autostart not registered (elevation declined)")
 
-	fmt.Printf("installed.\n  binary:    %s\n  config:    %s\n  autostart: %s\nRunning now and at login. Channels are managed in the Intel tab.\n", bin, cfgPath, unitPath)
-	return nil
+	default:
+		return fmt.Errorf("register autostart: %w (config was saved; `%s run` still works)", err, bin)
+	}
 }
 
-// uninstall stops + removes the autostart unit (Linux) and deletes the binary + config.
-// It must mirror install: now that install saves a config everywhere, uninstall has to
-// be able to delete it everywhere, or the token would be unremovable off Linux.
+// uninstall removes the login entry and deletes the binary + config.
 func uninstall(args []string) error {
-	if runtime.GOOS == "linux" {
-		_ = systemctl("disable", "--now", unitName) // best-effort
-		if unitPath, err := config.UnitPath(); err == nil {
-			os.Remove(unitPath)
-		}
-		_ = systemctl("daemon-reload")
-	}
+	auto := newAutostarter()
+	autoErr := auto.Remove()
 
 	cfg, _ := config.Load()
 	binGone := true
 	if cfg.Bin != "" {
 		if err := os.Remove(cfg.Bin); err != nil && !os.IsNotExist(err) {
-			// Windows refuses to delete a running image, and a shipper started from
-			// the installed path is the likely reason. Say so instead of claiming
-			// success — the config is gone either way, so the leftover is inert.
+			// Windows refuses to delete a running image — and `uninstall` run FROM the
+			// installed copy is exactly that case. The config is gone either way, so
+			// the leftover is inert; say where it is rather than claim success.
 			binGone = false
-			fmt.Printf("could not delete %s: %v\n(stop a running shipper first, then delete it by hand)\n", cfg.Bin, err)
+			fmt.Printf("could not delete %s: %v\n(stop the shipper, then delete it by hand)\n", cfg.Bin, err)
 		}
 	}
 	if d, err := config.Dir(); err == nil {
 		os.RemoveAll(d)
 	}
+
 	what := "binary + config deleted"
 	if !binGone {
 		what = "config deleted; binary left behind (see above)"
 	}
-	if runtime.GOOS == "linux" {
-		fmt.Printf("uninstalled: autostart removed, %s.\n", what)
-	} else {
-		fmt.Printf("uninstalled: %s.\n", what)
+	if autoErr != nil {
+		if errors.Is(autoErr, errElevationDeclined) {
+			fmt.Printf("uninstalled: %s. The login entry was NOT removed (elevation declined) — it will fail harmlessly at next logon; re-run uninstall to clear it.\n", what)
+			return nil
+		}
+		fmt.Printf("uninstalled: %s. Could not remove the login entry: %v\n", what, autoErr)
+		return nil
 	}
+	fmt.Printf("uninstalled: autostart removed, %s.\n", what)
 	return nil
 }
 
@@ -175,13 +155,7 @@ func status(_ []string) error {
 	if len(cfg.Channels) > 0 {
 		fmt.Printf("seed:      %s\n", strings.Join(cfg.Channels, ", "))
 	}
-	if runtime.GOOS == "linux" {
-		fmt.Printf("autostart: %s\n", systemctlOut("is-active", unitName))
-	} else {
-		// Say it plainly rather than omitting the line: a missing field reads as
-		// "couldn't tell", when the truth is there's nothing to start it.
-		fmt.Printf("autostart: unavailable on %s — start it with `anjin-intel run`\n", runtime.GOOS)
-	}
+	fmt.Printf("autostart: %s\n", newAutostarter().State())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -200,24 +174,9 @@ func status(_ []string) error {
 
 // --- helpers ---
 
-func systemctl(args ...string) error {
-	out, err := exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("systemctl --user %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// systemctlOut returns trimmed output regardless of exit code (is-active exits
-// non-zero when inactive but still prints the state).
-func systemctlOut(args ...string) string {
-	out, _ := exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
-	if s := strings.TrimSpace(string(out)); s != "" {
-		return s
-	}
-	return "unknown"
-}
-
+// copyFile writes src to dst atomically. On Windows a running .exe cannot be replaced,
+// and task termination is asynchronous, so the rename is retried briefly; the caller
+// stops the autostart entry first.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -238,7 +197,21 @@ func copyFile(src, dst string) error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, dst) // atomic; replacing a running binary is fine on Linux
-}
 
-// detectLogdir lives in detect_<goos>.go — the Chatlogs location is OS-specific.
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		if lastErr = os.Rename(tmp, dst); lastErr == nil {
+			return nil
+		}
+		// Windows allows RENAMING a running image even when it refuses to replace one,
+		// so move the old binary aside and retry. The leftover is cleaned up next run.
+		if err := os.Rename(dst, dst+".old"); err == nil {
+			if lastErr = os.Rename(tmp, dst); lastErr == nil {
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	os.Remove(tmp)
+	return lastErr
+}

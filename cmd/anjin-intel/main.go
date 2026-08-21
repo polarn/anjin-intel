@@ -62,9 +62,9 @@ Usage:
   anjin-intel status
   anjin-intel uninstall
 
-install saves the config (server, token, logdir) and copies the binary, so later runs
-need no flags. On Linux it also registers a systemd user service to start at login;
-elsewhere there's no autostart yet, so run it yourself: anjin-intel run, no flags.
+install saves the config (server, token, logdir), copies the binary, and sets the
+shipper to start at login — a systemd user service on Linux, a Task Scheduler logon
+task on Windows (which needs one UAC prompt). Later runs need no flags.
 Channels are managed in the Intel tab; --channels is just an optional seed.
 `)
 }
@@ -80,7 +80,14 @@ func runCmd(args []string) error {
 	logdir := fs.String("logdir", "", "EVE Chatlogs directory to watch")
 	channels := fs.String("channels", "", "comma-separated channel seed (the Intel tab is authoritative)")
 	poll := fs.Duration("poll", 2*time.Second, "how often to scan the log directory")
+	// Set by the autostart entry, not by people: Task Scheduler hands a console-subsystem
+	// process a console window at logon, and this releases it. Undocumented in usage on
+	// purpose — it is an implementation detail of the launcher, not a user knob.
+	background := fs.Bool("background", false, "")
 	fs.Parse(args)
+	if *background {
+		detachConsole()
+	}
 
 	// Fall back to the saved install config for any flag not given — so the systemd
 	// unit can invoke `anjin-intel run` with no arguments.

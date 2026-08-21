@@ -14,9 +14,9 @@ library (trivially auditable, reproducible), and **read-only** — it tails the 
 directory and POSTs; it never writes to the game and never touches anything but the
 channels you explicitly allow. Default is *no* channels.
 
-> **Scope:** Linux (Steam/Proton, Lutris) and Windows. `install` works on both, but
-> only Linux starts the shipper at login — on Windows you launch it yourself. macOS is
-> a planned follow-up.
+> **Scope:** Linux (Steam/Proton, Lutris) and Windows — both install and start the
+> shipper at login. macOS is a planned follow-up: `install` saves the config there, but
+> you start it yourself.
 
 ## Get it
 
@@ -79,24 +79,32 @@ anjin-intel uninstall   # stop + remove the service, binary and config
 
 ### Windows
 
-**Install** — saves the config and copies the binary to
-`%LOCALAPPDATA%\Programs\anjin`. There's no autostart backend on Windows yet, so it
-does *not* start at login:
+**Install** — saves the config, copies the binary to `%LOCALAPPDATA%\Programs\anjin`,
+and registers a **Task Scheduler logon task** so the shipper starts when you log in:
 
 ```powershell
 .\anjin-intel.exe install --server https://anjin.example.net --token <enrollment-token>
 ```
 
-Then run it in a terminal and leave the window open — no flags, it reads the config:
+**Expect one UAC prompt.** Registering a scheduled task needs elevation even on an
+Administrator account — a normal terminal holds the UAC-filtered token, where
+`Administrators` is deny-only, so `schtasks /create` answers "Access is denied". Only
+that one step is elevated; the config and binary are written beforehand as you, so your
+enrollment token never appears on an elevated command line. Decline the prompt and the
+install still completes — you just start it yourself and it says so.
+
+The task runs unelevated as you (it has to, to read your Chatlogs), lifts the default
+72-hour execution limit that would otherwise kill it every three days, and keeps running
+on battery.
+
+Run it by hand any time — no flags, it reads the config:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\anjin\anjin-intel.exe" run
 ```
 
-Installing first is worth it even without autostart: otherwise the token goes on the
-command line every time, and straight into PowerShell's history file with it.
-
-You can skip `install` and pass the flags each time if you prefer:
+You can skip `install` and pass the flags each time, but then the token goes on the
+command line and into PowerShell's history file every launch:
 
 ```powershell
 .\anjin-intel.exe run --server https://anjin.example.net --token <enrollment-token>
@@ -109,9 +117,10 @@ Documents folder actually is. That matters because the folder is both **localize
 hardcode. If you have both a live and an old copy, the one EVE most recently wrote to
 wins. Pass `--logdir` to override.
 
-Then pick your channels in the **Intel tab**, same as Linux. `status` and `uninstall`
-work here too — `uninstall` deletes the binary and config, with no service to stop
-(Windows won't delete a running `.exe`, so stop the shipper first).
+Then pick your channels in the **Intel tab**, same as Linux. `status` reports whether
+the task is registered and whether a shipper is live; `uninstall` removes the task
+(another UAC prompt), the binary and the config. Windows won't delete a running `.exe`,
+so `uninstall` says where the leftover is rather than pretending it succeeded.
 
 ### Run in the foreground (any OS)
 
